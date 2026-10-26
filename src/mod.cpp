@@ -4,13 +4,15 @@
 // enters from cutscenes. It provides the howl animation, the Z2SE_WL_V_HOWL voice, and a sustain
 // loop (frames 38-56) while the action button is held.
 
-#include "d/actor/d_a_alink.h"
-#include "m_Do/m_Do_controller_pad.h"
 #include "mods/service.hpp"
 #include "mods/svc/config.h"
 #include "mods/svc/hook.hpp"
 #include "mods/svc/log.hpp"
 #include "mods/svc/ui.h"
+
+// Game includes
+#include "d/actor/d_a_alink.h"
+#include "m_Do/m_Do_controller_pad.h"
 
 #include <algorithm>
 #include <cstddef>

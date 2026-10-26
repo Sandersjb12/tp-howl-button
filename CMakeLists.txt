@@ -27,3 +27,9 @@ add_mod(howl_button
         MOD_JSON "${CMAKE_CURRENT_BINARY_DIR}/mod.json"
         RES_DIR res            # mod resources, including icon.png and banner.png
 )
+
+# The game is built with /Zc:__cplusplus but the mod SDK doesn't add it. Without it MSVC reports
+# __cplusplus as 199711L, and dolphin/types.h then does `#define nullptr NULL`, breaking fmt.
+if (MSVC)
+    target_compile_options(howl_button PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:/Zc:__cplusplus>")
+endif ()
