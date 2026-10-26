@@ -3,5 +3,5 @@
   "name": "Howl Button",
   "version": "@PROJECT_VERSION@",
   "author": "jsanders",
-  "description": "Lets Wolf Link howl anywhere with a button chord (R+B by default), using the game's own howl animation and voice."
+  "description": "Lets Wolf Link howl (R+B), growl (R+A) and bark (R+D-pad Right) anywhere, using the game's own animations and voices."
 }
