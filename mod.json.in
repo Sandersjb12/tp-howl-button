@@ -1,0 +1,7 @@
+{
+  "id": "com.jsanders.howl_button",
+  "name": "Howl Button",
+  "version": "@PROJECT_VERSION@",
+  "author": "jsanders",
+  "description": "Lets Wolf Link howl anywhere with a button chord (R+B by default), using the game's own howl animation and voice."
+}
