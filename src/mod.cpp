@@ -176,8 +176,12 @@ DEFINE_HOOK(&daAlink_c::checkNextActionFromButton, NextActionFromButton);
 DEFINE_HOOK(&daAlink_c::procWolfHowl, WolfHowl);
 DEFINE_HOOK(&daAlink_c::checkWolfAtnWait, WolfAtnWait);
 DEFINE_HOOK(&daAlink_c::setBlendWolfMoveAnime, WolfMoveAnime);
-DEFINE_HOOK(&Z2CreatureLink::startLinkVoice, LinkVoice);
-DEFINE_HOOK(&Z2CreatureLink::startLinkVoiceLevel, LinkVoiceLevel);
+// Hooked by name: Z2CreatureLink has two bases, and MSVC can't constant-initialize the hook record
+// for its multiple-inheritance member pointers (mods/meta.hpp).
+DEFINE_HOOK_SYMBOL("Z2CreatureLink::startLinkVoice",
+    Z2SoundHandlePool*(Z2CreatureLink*, JAISoundID, s8), LinkVoice);
+DEFINE_HOOK_SYMBOL("Z2CreatureLink::startLinkVoiceLevel",
+    Z2SoundHandlePool*(Z2CreatureLink*, JAISoundID, s8), LinkVoiceLevel);
 
 int64_t get_int_option(ConfigVarHandle handle, int64_t fallback) {
     int64_t value = fallback;
