@@ -35,7 +35,7 @@ Open the Mods window, select **Howl Button**:
 | --- | --- | --- |
 | Hold | R | Button held for the chord: R, L, Z, or None. |
 | Then press | B | Button pressed to howl: B, A, X, Y, or a D-pad direction. |
-| Howl style | Sitting | **Sitting**: the howling-stone pose; long note that sustains while held. **Standing**: a shorter standing howl that repeats while held. |
+| Howl style | Sitting | **Sitting**: the howling-stone pose; long note that sustains while held. **Standing**: a standing howl; holding the button holds the nose-up pose and the note. |
 | Allow howling while targeting enemies | Off | When off, you can't howl while L-targeting an enemy. Targeting NPCs and objects is never blocked. |
 | Growl: Hold / Then press | R / A | The growl chord, with the same choices as the howl. |
 | Bark: Hold / Then press | R / D-pad Right | The bark chord, with the same choices as the howl. |
@@ -98,9 +98,18 @@ While developing, rebuild, copy, and click **Reload** in the in-game Mods window
   frame. When the howl chord was pressed and Wolf Link is in an allowed state, it starts the vanilla
   howl with `procWolfHowlInit` and skips the normal button handling for that frame. It also plays the
   bark and growl sounds.
-- `procWolfHowl`: the howl only sustains while the A button is held, so while the chord button is
-  held the mod sets A in Link's per-frame button state.
+- `procWolfHowl`: holds the howl while the chord button is held. The sitting howl has a vanilla
+  sustain that runs while A is held, so the mod sets A in Link's per-frame button state. The
+  standing howl has none, so the mod sways its animation along a sine wave across the nose-up part
+  (frames 18–34, where the nose is 72–75° up) and plays the howl voice. On release, the animation
+  eases back to normal speed and plays out.
 - `daAlink_c::checkWolfAtnWait` (post-hook): the game's "targeting an enemy" test, which switches on
   the growl stance and voice. While growling it reports true.
 - `daAlink_c::setBlendWolfMoveAnime`: while growling and standing still, it uses the lock-on
   animation blend instead, which shows the growl stance.
+- `Z2CreatureLink::startLinkVoice`: Link's voice plays one sound at a time, and while moving the
+  wolf's breathing sounds keep it busy. While growling, the breathing sounds are skipped so the
+  growl can play.
+- `Z2CreatureLink::startLinkVoiceLevel`: the game lowers the growl's volume when L is held
+  without a target (0.3) or a non-enemy is targeted (0.5). While growling, the mod plays it at the
+  normal volume (1.0) unless an enemy is targeted (the vanilla 0.8).

@@ -1,7 +1,7 @@
 {
-  "id": "com.jsanders.howl_button",
+  "id": "com.jennbeam.howl_button",
   "name": "Howl Button",
   "version": "@PROJECT_VERSION@",
-  "author": "jsanders",
+  "author": "jennbeam",
   "description": "Lets Wolf Link howl (R+B), growl (R+A) and bark (R+D-pad Right) anywhere, using the game's own animations and voices."
 }

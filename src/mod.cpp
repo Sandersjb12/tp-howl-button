@@ -25,6 +25,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 
@@ -52,10 +53,24 @@ constexpr int64_t kButtonDpadRight = 7;
 // Interpolation frames when switching between the idle and growl stances (-1 would snap).
 constexpr f32 kGrowlBlendFrames = 5.0f;
 
-// Sitting is the howling-stone pose (WANM_HOWL_SIT): long voice, sustains while held.
-// Standing (WANM_HOWL) is shorter and repeats while held.
+// Sitting is the howling-stone pose (WANM_HOWL_SIT): vanilla sustains it while held.
+// Standing (WANM_HOWL) has no vanilla sustain, so the mod holds its pose while held.
 constexpr const char* kStyleLabels[] = {"Sitting", "Standing"};
 constexpr int64_t kStyleSitting = 0;
+
+// Standing howl (WANM_HOWL, 49 frames): the nose is up (72-75 degrees, measured from head joint 4)
+// on frames 16-35, and vanilla voices frames 38-40 as the head comes down, then ends or restarts
+// the howl past the cancel frame (40). Holding sways the animation along a sine wave across the
+// nose-up plateau and voices it; on release the rate eases back to normal, the mod keeps voicing
+// until vanilla's own voice window, and the howl plays out.
+// The rate must never be 0: daPy_frameCtrl_c::checkAnmEnd() treats a stopped animation as ended.
+constexpr f32 kStandingSwayCenter = 26.0f;
+constexpr f32 kStandingSwayAmplitude = 8.0f;  // frames 18-34
+// Peak sway speed is amplitude * omega = 1 frame/tick, matching normal playback where the sway
+// starts (the center, moving forward).
+constexpr f32 kStandingSwayOmega = 1.0f / kStandingSwayAmplitude;
+constexpr f32 kStandingReleaseEase = 0.2f;     // fraction of the remaining rate change per tick
+constexpr f32 kStandingVanillaVoiceFrame = 38.0f;
 
 // Every wolf voice in Z2SeMgr.h. Looping ("level") sounds must be refreshed every tick, so they
 // play while the bark chord is held instead of as a one-shot; started as a one-shot they never
@@ -146,6 +161,11 @@ ConfigVarHandle g_cvarBarkSound = 0;
 
 // Set while a howl this mod started is playing, so the sustain hook leaves cutscene howls alone.
 bool g_modHowl = false;
+// Standing howl hold state, sway tick counter, and the animation rate to resume with.
+enum class StandingHold { None, Sway, Release };
+StandingHold g_standingHold = StandingHold::None;
+int g_standingSwayTick = 0;
+f32 g_standingHowlRate = 1.0f;
 // Whether the idle growl stance was shown on the previous setBlendWolfMoveAnime call.
 bool g_growlStance = false;
 // Set while the mod asks for the real checkWolfAtnWait() result (the howl's combat gate).
@@ -156,6 +176,8 @@ DEFINE_HOOK(&daAlink_c::checkNextActionFromButton, NextActionFromButton);
 DEFINE_HOOK(&daAlink_c::procWolfHowl, WolfHowl);
 DEFINE_HOOK(&daAlink_c::checkWolfAtnWait, WolfAtnWait);
 DEFINE_HOOK(&daAlink_c::setBlendWolfMoveAnime, WolfMoveAnime);
+DEFINE_HOOK(&Z2CreatureLink::startLinkVoice, LinkVoice);
+DEFINE_HOOK(&Z2CreatureLink::startLinkVoiceLevel, LinkVoiceLevel);
 
 int64_t get_int_option(ConfigVarHandle handle, int64_t fallback) {
     int64_t value = fallback;
@@ -263,6 +285,7 @@ bool try_start_howl(daAlink_c* link) {
         return false;
     }
     g_modHowl = true;
+    g_standingHold = StandingHold::None;
     return true;
 }
 
@@ -296,6 +319,7 @@ HookAction on_next_action_from_button_pre(ModContext*, void* args, void* retval,
     daAlink_c* link = mods::arg<daAlink_c*>(args, 0);
     if (link->mProcID != daAlink_c::PROC_WOLF_HOWL) {
         g_modHowl = false;
+        g_standingHold = StandingHold::None;
     }
 
     update_bark(link);
@@ -310,14 +334,69 @@ HookAction on_next_action_from_button_pre(ModContext*, void* args, void* retval,
     return HOOK_SKIP_ORIGINAL;
 }
 
-// procWolfHowl sustains (or repeats) the howl while doButton() is held. Feed it the chord button,
-// which the input layer consumed from the pad. mItemButton is rebuilt every frame by
-// setStickData, so this doesn't leak into other actions.
+// Holds the howl while the chord button (consumed from the pad by the input layer) stays held.
 HookAction on_wolf_howl_pre(ModContext*, void* args, void*, void*) {
     daAlink_c* link = mods::arg<daAlink_c*>(args, 0);
-    if (g_modHowl && g_howl.held && !link->checkEventRun()) {
-        link->mItemButton |= daAlink_c::BTN_A;
+    const bool holding = g_modHowl && g_howl.held && !link->checkEventRun();
+
+    // Sitting: vanilla loops frames 38-56 while doButton() is held. mItemButton is rebuilt every
+    // frame by setStickData, so this doesn't leak into other actions.
+    if (link->mProcVar3.field_0x300e != 0) {
+        if (holding) {
+            link->mItemButton |= daAlink_c::BTN_A;
+        }
+        return HOOK_CONTINUE;
     }
+
+    // Standing. Animations advance before the proc runs, so a rate set here moves next tick's frame.
+    daPy_frameCtrl_c& frameCtrl = link->mUnderFrameCtrl[0];
+    const f32 frame = frameCtrl.getFrame();
+    if (!g_modHowl || link->checkEventRun()) {
+        g_standingHold = StandingHold::None;
+        return HOOK_CONTINUE;
+    }
+
+    f32 rate = frameCtrl.getRate();
+    switch (g_standingHold) {
+    case StandingHold::None:
+        if (!holding || frame < kStandingSwayCenter) {
+            return HOOK_CONTINUE;
+        }
+        g_standingHowlRate = rate;
+        g_standingSwayTick = 0;
+        g_standingHold = StandingHold::Sway;
+        [[fallthrough]];
+    case StandingHold::Sway:
+        if (!holding) {
+            g_standingHold = StandingHold::Release;
+            break;
+        }
+        // Step to the next point on the sine exactly, so the frame never drifts out of range.
+        rate = kStandingSwayAmplitude *
+               (std::sin(kStandingSwayOmega * (g_standingSwayTick + 1)) -
+                   std::sin(kStandingSwayOmega * g_standingSwayTick));
+        g_standingSwayTick++;
+        break;
+    case StandingHold::Release:
+        break;
+    }
+
+    if (g_standingHold == StandingHold::Release) {
+        rate += (g_standingHowlRate - rate) * kStandingReleaseEase;
+        if (std::fabs(g_standingHowlRate - rate) < 0.02f) {
+            rate = g_standingHowlRate;
+        }
+        if (frame >= kStandingVanillaVoiceFrame) {
+            // Vanilla voices from here and the howl plays out.
+            frameCtrl.setRate(g_standingHowlRate);
+            g_standingHold = StandingHold::None;
+            return HOOK_CONTINUE;
+        }
+    }
+
+    frameCtrl.setRate(rate != 0.0f ? rate : 0.001f);
+    // The howl voice is a level sound: it must be refreshed every tick.
+    link->voiceStartLevel(Z2SE_WL_V_HOWL);
     return HOOK_CONTINUE;
 }
 
@@ -333,6 +412,41 @@ void on_wolf_atn_wait_post(ModContext*, void* args, void* retval, void*) {
     {
         *static_cast<BOOL*>(retval) = TRUE;
     }
+}
+
+// Link's voice object has a single sound handle, and while moving the breathing one-shots keep it
+// busy, so the growl (a level sound) never gets to play. Drop the breaths while growling.
+HookAction on_link_voice_pre(ModContext*, void* args, void* retval, void*) {
+    if (!g_growl.held) {
+        return HOOK_CONTINUE;
+    }
+    switch (static_cast<u32>(mods::arg<JAISoundID>(args, 1))) {
+    case Z2SE_WL_V_BREATH_WAIT:
+    case Z2SE_WL_V_BREATH_TIRED:
+    case Z2SE_WL_V_BREATH_SIT:
+    case Z2SE_WL_V_BREATH_WALK:
+    case Z2SE_WL_V_BREATH_RUN:
+    case Z2SE_WL_V_BREATH_JUMP:
+        if (retval != nullptr) {
+            *static_cast<Z2SoundHandlePool**>(retval) = nullptr;
+        }
+        return HOOK_SKIP_ORIGINAL;
+    default:
+        return HOOK_CONTINUE;
+    }
+}
+
+// The growl's volume follows the lock-on mark state: 1.0 with none, 0.3 holding L without a
+// target, 0.5 targeting a non-enemy, 0.8 targeting an enemy. Play the mod's growl at the no-target
+// volume unless an enemy is targeted. setAtnList recomputes the state every tick.
+HookAction on_link_voice_level_pre(ModContext*, void* args, void*, void*) {
+    Z2CreatureLink* z2Link = mods::arg<Z2CreatureLink*>(args, 0);
+    if (g_growl.held && static_cast<u32>(mods::arg<JAISoundID>(args, 1)) == Z2SE_WL_V_ROAR &&
+        (z2Link->mMarkState == 1 || z2Link->mMarkState == 2))
+    {
+        z2Link->setMarkState(0);
+    }
+    return HOOK_CONTINUE;
 }
 
 // Idle has no growl stance of its own; use the lock-on blend, which picks WANM_ATN when standing
@@ -495,6 +609,14 @@ MOD_EXPORT ModResult mod_initialize(ModError* error) {
     result = mods::hook::add_pre<WolfMoveAnime>(on_wolf_move_anime_pre);
     if (result != MOD_OK) {
         return mods::set_error(error, result, "failed to hook daAlink_c::setBlendWolfMoveAnime");
+    }
+    result = mods::hook::add_pre<LinkVoice>(on_link_voice_pre);
+    if (result != MOD_OK) {
+        return mods::set_error(error, result, "failed to hook Z2CreatureLink::startLinkVoice");
+    }
+    result = mods::hook::add_pre<LinkVoiceLevel>(on_link_voice_level_pre);
+    if (result != MOD_OK) {
+        return mods::set_error(error, result, "failed to hook Z2CreatureLink::startLinkVoiceLevel");
     }
 
     UiModsPanelDesc panelDesc = UI_MODS_PANEL_DESC_INIT;
