@@ -1,7 +1,7 @@
 # Howl Button
 
-A [Dusklight](https://github.com/TwilitRealm/dusklight) mod that lets Wolf Link howl, growl and bark whenever
-you want.
+A [Dusklight](https://github.com/TwilitRealm/dusklight) mod that lets Wolf Link howl, growl, bark or play any wolf voice
+whenever you want.
 
 Everything uses the game's own animations and voices: the howl is the howl action the game plays in
 cutscenes, and the growl is the stance and growl the wolf uses when targeting an enemy. No assets are
@@ -9,45 +9,49 @@ added or replaced.
 
 ## Controls
 
-As Wolf Link, **hold R and press B** to howl.
+The mod has four chords. Each one can be set to any sound in the options. The defaults are:
 
-- **Tap** for a single howl.
-- **Hold B** to keep howling. In the sitting style the note sustains until you let go.
+| Chord | Sound |
+| --- | --- |
+| **R + B** | Bark |
+| **R + A** | Growl |
+| **R + D-pad Right** | Howl |
+| **R + D-pad Left** | None (unassigned) |
 
-**Hold R and hold A** to growl, for as long as you keep A held.
+- **Howl**: the howl animation and voice. Tap for a single howl; hold to keep howling. In the sitting
+  style the note sustains; in the standing style Wolf Link holds the nose-up pose.
+- **Growl**: lasts while the button is held. Standing still, or holding L, Wolf Link takes the crouched
+  growl stance. Moving without L, the growl sound plays and Wolf Link keeps moving normally.
+- **Bark**: the game has no bark of its own. This is an unused "Threat" sound left in the game; it plays
+  while you hold the button. Barking doesn't interrupt what you're doing.
+- **Any other wolf voice**: all ~50 of the game's wolf voice sounds are available, as sound only.
+  Sounds marked "(hold)" loop while the button is held and stop when it's released.
 
-- Standing still, or holding L: Wolf Link takes the crouched growl stance.
-- Moving without L: the growl sound plays and Wolf Link keeps moving normally.
-
-**Hold R and press D-pad Right** to bark. The game has no bark of its own; by default the bark is the
-unused "Threat" sound left in the game, which plays while you hold the button. Other sounds can be
-picked in the options. Barking doesn't interrupt what you're doing.
-
-You can howl, growl or bark while standing still, walking or running, idling, panting at low health, or L-targeting
-something. You can't howl in the air, while swimming, while carrying something in your mouth, during
-cutscenes or text, or in any other special action (digging, sensing, dashing, attacking, and so on).
+You can use the chords while standing still, walking or running, idling, panting at low health, or
+L-targeting something. They don't work in the air, while swimming, while carrying something in your
+mouth, during cutscenes or text, or in any other special action (digging, sensing, dashing,
+attacking, and so on).
 
 ## Options
 
-Open the Mods window, select **Howl Button**:
+Open the Mods window and select **Howl Button**:
 
 | Option | Default | What it does |
 | --- | --- | --- |
-| Hold | R | Button held for the chord: R, L, Z, or None. |
-| Then press | B | Button pressed to howl: B, A, X, Y, or a D-pad direction. |
+| Chord 1–4: Hold | R | Button held for the chord: R, L, Z, or None. |
+| Chord 1–4: Then press | B / A / D-pad Right / D-pad Left | Button pressed: B, A, X, Y, or a D-pad direction. |
+| Chord 1–4: Sound | Bark / Growl / Howl / None | **None**, **Howl**, **Growl**, or any wolf voice. "Howl voice only" and "Growl voice only" play just the sound, with no animation. |
 | Howl style | Sitting | **Sitting**: the howling-stone pose; long note that sustains while held. **Standing**: a standing howl; holding the button holds the nose-up pose and the note. |
 | Allow howling while targeting enemies | Off | When off, you can't howl while L-targeting an enemy. Targeting NPCs and objects is never blocked. |
-| Growl: Hold / Then press | R / A | The growl chord, with the same choices as the howl. |
-| Bark: Hold / Then press | R / D-pad Right | The bark chord, with the same choices as the howl. |
-| Bark: Sound | Threat (unused, hold) | Any of the game's ~50 wolf voice sounds. "Threat" is an unused sound left in the game, possibly a cut bark. Sounds marked "(hold)" loop while the button is held and stop when it's released. |
 
 While a chord is pressed, its button is hidden from the game, so the chord doesn't also attack, dash or
-toggle the minimap. In states where the chord can't be used, the button works normally.
+open the map. A chord set to **None** leaves its button alone, and in states where a chord can't be
+used, the button works normally.
 
 Avoid chords Dusklight already uses: R+X (Sun's Song), R+Y (Quick Transform), R+D-pad Up/Down
-(teleport). R+A also triggers Dusklight's Moon Jump if that cheat is enabled. If two chords are the same,
-howl wins over bark, and bark over growl. Choosing "None" as the held button makes the pressed button howl on its own, which
-replaces that button's normal wolf action in the states listed above.
+(teleport). R+A also triggers Dusklight's Moon Jump if that cheat is enabled. If two chords use the
+same button, the lower-numbered chord wins. Choosing "None" as the held button makes the pressed
+button work on its own, which replaces that button's normal wolf action in the states listed above.
 
 ## Known limitations
 
@@ -95,9 +99,9 @@ While developing, rebuild, copy, and click **Reload** in the in-game Mods window
 - `fapGm_Execute`: runs each game tick after the controller is read and before any actor or menu.
   It detects the chords and removes their buttons from the pad state, so nothing else reacts to them.
 - `daAlink_c::checkNextActionFromButton`: where the game decides which button action to take each
-  frame. When the howl chord was pressed and Wolf Link is in an allowed state, it starts the vanilla
+  frame. When a Howl chord was pressed and Wolf Link is in an allowed state, it starts the vanilla
   howl with `procWolfHowlInit` and skips the normal button handling for that frame. It also plays the
-  bark and growl sounds.
+  growl sound and any voices assigned to chords.
 - `procWolfHowl`: holds the howl while the chord button is held. The sitting howl has a vanilla
   sustain that runs while A is held, so the mod sets A in Link's per-frame button state. The
   standing howl has none, so the mod sways its animation along a sine wave across the nose-up part
@@ -108,8 +112,8 @@ While developing, rebuild, copy, and click **Reload** in the in-game Mods window
 - `daAlink_c::setBlendWolfMoveAnime`: while growling and standing still, it uses the lock-on
   animation blend instead, which shows the growl stance.
 - `Z2CreatureLink::startLinkVoice`: Link's voice plays one sound at a time, and while moving the
-  wolf's breathing sounds keep it busy. While growling, the breathing sounds are skipped so the
-  growl can play.
+  wolf's breathing sounds keep it busy. While a growl or voice chord is held, the breathing sounds
+  are skipped so the chord's sound can play.
 - `Z2CreatureLink::startLinkVoiceLevel`: the game lowers the growl's volume when L is held
   without a target (0.3) or a non-enemy is targeted (0.5). While growling, the mod plays it at the
   normal volume (1.0) unless an enemy is targeted (the vanilla 0.8).

@@ -1,4 +1,4 @@
-// Howl Button: lets Wolf Link howl, growl and bark on demand.
+// Howl Button: four configurable chords, each assigned a wolf sound.
 //
 // Howl reuses the vanilla howl action (procWolfHowlInit / procWolfHowl), which the game otherwise
 // only enters from cutscenes. It provides the howl animation, the Z2SE_WL_V_HOWL voice, and a
@@ -7,8 +7,8 @@
 // Growl reuses the stance and voice the game plays while L-targeting an enemy, both gated by
 // daAlink_c::checkWolfAtnWait().
 //
-// Bark plays one of the wolf voice sounds. There is no vanilla bark, so the sound is selectable;
-// the list doubles as a way to audition every wolf voice in game.
+// Any other wolf voice can be assigned as sound only. There is no vanilla bark; "Bark" is the
+// unused THREAT voice.
 
 #include "mods/service.hpp"
 #include "mods/svc/config.h"
@@ -47,7 +47,9 @@ constexpr const char* kButtonLabels[] = {
 constexpr u32 kButtonMasks[] = {PAD_BUTTON_B, PAD_BUTTON_A, PAD_BUTTON_X, PAD_BUTTON_Y,
     PAD_BUTTON_UP, PAD_BUTTON_DOWN, PAD_BUTTON_LEFT, PAD_BUTTON_RIGHT};
 static_assert(std::size(kButtonLabels) == std::size(kButtonMasks));
+constexpr int64_t kButtonB = 0;
 constexpr int64_t kButtonA = 1;
+constexpr int64_t kButtonDpadLeft = 6;
 constexpr int64_t kButtonDpadRight = 7;
 
 // Interpolation frames when switching between the idle and growl stances (-1 would snap).
@@ -72,95 +74,125 @@ constexpr f32 kStandingSwayOmega = 1.0f / kStandingSwayAmplitude;
 constexpr f32 kStandingReleaseEase = 0.2f;     // fraction of the remaining rate change per tick
 constexpr f32 kStandingVanillaVoiceFrame = 38.0f;
 
-// Every wolf voice in Z2SeMgr.h. Looping ("level") sounds must be refreshed every tick, so they
-// play while the bark chord is held instead of as a one-shot; started as a one-shot they never
-// stop. The unused sounds have no vanilla call site to tell, so they're treated as looping
-// (THREAT is confirmed to loop).
-struct BarkSound {
+// What a chord plays: nothing, one of the two animated actions, or a wolf voice (sound only).
+enum class SoundKind { None, Howl, Growl, Voice };
+
+struct ChordSound {
     const char* label;
-    u32 id;
+    SoundKind kind;
+    u32 voice;
     bool loop;
 };
 
-constexpr BarkSound kBarkSounds[] = {
-    {"Threat (unused, hold)", Z2SE_WL_V_THREAT, true},
-    {"Title screen howl (unused, hold)", Z2SE_WL_V_TITLE_HOWL, true},
-    {"Breath: idle", Z2SE_WL_V_BREATH_WAIT, false},
-    {"Breath: tired", Z2SE_WL_V_BREATH_TIRED, false},
-    {"Breath: sitting", Z2SE_WL_V_BREATH_SIT, false},
-    {"Breath: walk", Z2SE_WL_V_BREATH_WALK, false},
-    {"Breath: run", Z2SE_WL_V_BREATH_RUN, false},
-    {"Breath: jump", Z2SE_WL_V_BREATH_JUMP, false},
-    {"Damage", Z2SE_WL_V_DAMAGE, false},
-    {"Howl (hold)", Z2SE_WL_V_HOWL, true},
-    {"Yawn", Z2SE_WL_V_YAWN, false},
-    {"Growl (hold)", Z2SE_WL_V_ROAR, true},
-    {"Attack: short", Z2SE_WL_V_ATTACK_S, false},
-    {"Attack: long", Z2SE_WL_V_ATTACK_L, false},
-    {"Attack: spin", Z2SE_WL_V_ATTACK_SPIN, false},
-    {"Attack: thrust", Z2SE_WL_V_ATTACK_THRUST, false},
-    {"Dash", Z2SE_WL_V_DASH, false},
-    {"Sniff (hold)", Z2SE_WL_V_SNIFF, true},
-    {"Snort", Z2SE_WL_V_NOSE, false},
-    {"Land damage", Z2SE_WL_V_LAND_DAMAGE, false},
-    {"Fall to restart", Z2SE_WL_V_FALL_TO_RESTART, false},
-    {"Restart", Z2SE_WL_V_RESTART, false},
-    {"Die", Z2SE_WL_V_DIE, false},
-    {"Bite attack", Z2SE_WL_V_BITE_ATTACK, false},
-    {"Bite throat", Z2SE_WL_V_BITE_THROAT, false},
-    {"Hold in mouth", Z2SE_WL_V_HOLD_MOUTH, false},
-    {"Lock-on jump", Z2SE_WL_V_LOCK_JUMP, false},
-    {"Terrified", Z2SE_WL_V_TERRORED, false},
-    {"Caught", Z2SE_WL_V_CATCHED, false},
-    {"Caught (hold)", Z2SE_WL_V_CATCHED_LOOP, true},
-    {"Slip roll", Z2SE_WL_V_SLIP_ROLL, false},
-    {"Slip climb", Z2SE_WL_V_SLIP_CLIMB, false},
-    {"Die in water", Z2SE_WL_V_DIE_WATER, false},
-    {"Fall in lava", Z2SE_WL_V_FALL_MAGMA, false},
-    {"Fall in quicksand", Z2SE_WL_V_FALL_QUICKSAND, false},
-    {"Push rock", Z2SE_WL_V_PUSH_ROCK, false},
-    {"Turn back", Z2SE_WL_V_TURN_BACK, false},
-    {"Throw from mouth", Z2SE_WL_V_HOLD_THROW, false},
-    {"Bite and hang", Z2SE_WL_V_BITE_HANG, false},
-    {"Failed", Z2SE_WL_V_FAILED, false},
-    {"Foot miss", Z2SE_WL_V_FOOTMISS, false},
-    {"Entrance", Z2SE_WL_V_ENTRANCE, false},
-    {"Midna shock", Z2SE_WL_V_MD_SHOCK, false},
-    {"Twilight pull", Z2SE_WL_V_TW_PULL, false},
-    {"Poe attack: start", Z2SE_WL_V_ATTACK_POU_ST, false},
-    {"Poe attack: bite", Z2SE_WL_V_ATTACK_POU_BITE, false},
-    {"Electric damage", Z2SE_WL_V_DAMAGE_ELEC, false},
-    {"Freeze damage", Z2SE_WL_V_DAMAGE_FREEZE, false},
+// Every wolf voice in Z2SeMgr.h follows the actions. Looping ("level") voices must be refreshed
+// every tick, so they play while the chord is held instead of as a one-shot; started as a one-shot
+// they never stop. The unused voices have no vanilla call site to tell, so they're treated as
+// looping (THREAT is confirmed to loop).
+constexpr ChordSound kChordSounds[] = {
+    {"None", SoundKind::None, 0, false},
+    {"Howl", SoundKind::Howl, 0, false},
+    {"Growl", SoundKind::Growl, 0, false},
+    {"Bark (Threat, unused, hold)", SoundKind::Voice, Z2SE_WL_V_THREAT, true},
+    {"Title screen howl (unused, hold)", SoundKind::Voice, Z2SE_WL_V_TITLE_HOWL, true},
+    {"Breath: idle", SoundKind::Voice, Z2SE_WL_V_BREATH_WAIT, false},
+    {"Breath: tired", SoundKind::Voice, Z2SE_WL_V_BREATH_TIRED, false},
+    {"Breath: sitting", SoundKind::Voice, Z2SE_WL_V_BREATH_SIT, false},
+    {"Breath: walk", SoundKind::Voice, Z2SE_WL_V_BREATH_WALK, false},
+    {"Breath: run", SoundKind::Voice, Z2SE_WL_V_BREATH_RUN, false},
+    {"Breath: jump", SoundKind::Voice, Z2SE_WL_V_BREATH_JUMP, false},
+    {"Damage", SoundKind::Voice, Z2SE_WL_V_DAMAGE, false},
+    {"Howl voice only (hold)", SoundKind::Voice, Z2SE_WL_V_HOWL, true},
+    {"Yawn", SoundKind::Voice, Z2SE_WL_V_YAWN, false},
+    {"Growl voice only (hold)", SoundKind::Voice, Z2SE_WL_V_ROAR, true},
+    {"Attack: short", SoundKind::Voice, Z2SE_WL_V_ATTACK_S, false},
+    {"Attack: long", SoundKind::Voice, Z2SE_WL_V_ATTACK_L, false},
+    {"Attack: spin", SoundKind::Voice, Z2SE_WL_V_ATTACK_SPIN, false},
+    {"Attack: thrust", SoundKind::Voice, Z2SE_WL_V_ATTACK_THRUST, false},
+    {"Dash", SoundKind::Voice, Z2SE_WL_V_DASH, false},
+    {"Sniff (hold)", SoundKind::Voice, Z2SE_WL_V_SNIFF, true},
+    {"Snort", SoundKind::Voice, Z2SE_WL_V_NOSE, false},
+    {"Land damage", SoundKind::Voice, Z2SE_WL_V_LAND_DAMAGE, false},
+    {"Fall to restart", SoundKind::Voice, Z2SE_WL_V_FALL_TO_RESTART, false},
+    {"Restart", SoundKind::Voice, Z2SE_WL_V_RESTART, false},
+    {"Die", SoundKind::Voice, Z2SE_WL_V_DIE, false},
+    {"Bite attack", SoundKind::Voice, Z2SE_WL_V_BITE_ATTACK, false},
+    {"Bite throat", SoundKind::Voice, Z2SE_WL_V_BITE_THROAT, false},
+    {"Hold in mouth", SoundKind::Voice, Z2SE_WL_V_HOLD_MOUTH, false},
+    {"Lock-on jump", SoundKind::Voice, Z2SE_WL_V_LOCK_JUMP, false},
+    {"Terrified", SoundKind::Voice, Z2SE_WL_V_TERRORED, false},
+    {"Caught", SoundKind::Voice, Z2SE_WL_V_CATCHED, false},
+    {"Caught (hold)", SoundKind::Voice, Z2SE_WL_V_CATCHED_LOOP, true},
+    {"Slip roll", SoundKind::Voice, Z2SE_WL_V_SLIP_ROLL, false},
+    {"Slip climb", SoundKind::Voice, Z2SE_WL_V_SLIP_CLIMB, false},
+    {"Die in water", SoundKind::Voice, Z2SE_WL_V_DIE_WATER, false},
+    {"Fall in lava", SoundKind::Voice, Z2SE_WL_V_FALL_MAGMA, false},
+    {"Fall in quicksand", SoundKind::Voice, Z2SE_WL_V_FALL_QUICKSAND, false},
+    {"Push rock", SoundKind::Voice, Z2SE_WL_V_PUSH_ROCK, false},
+    {"Turn back", SoundKind::Voice, Z2SE_WL_V_TURN_BACK, false},
+    {"Throw from mouth", SoundKind::Voice, Z2SE_WL_V_HOLD_THROW, false},
+    {"Bite and hang", SoundKind::Voice, Z2SE_WL_V_BITE_HANG, false},
+    {"Failed", SoundKind::Voice, Z2SE_WL_V_FAILED, false},
+    {"Foot miss", SoundKind::Voice, Z2SE_WL_V_FOOTMISS, false},
+    {"Entrance", SoundKind::Voice, Z2SE_WL_V_ENTRANCE, false},
+    {"Midna shock", SoundKind::Voice, Z2SE_WL_V_MD_SHOCK, false},
+    {"Twilight pull", SoundKind::Voice, Z2SE_WL_V_TW_PULL, false},
+    {"Poe attack: start", SoundKind::Voice, Z2SE_WL_V_ATTACK_POU_ST, false},
+    {"Poe attack: bite", SoundKind::Voice, Z2SE_WL_V_ATTACK_POU_BITE, false},
+    {"Electric damage", SoundKind::Voice, Z2SE_WL_V_DAMAGE_ELEC, false},
+    {"Freeze damage", SoundKind::Voice, Z2SE_WL_V_DAMAGE_FREEZE, false},
 };
+constexpr int64_t kSoundNone = 0;
+constexpr int64_t kSoundHowl = 1;
+constexpr int64_t kSoundGrowl = 2;
+constexpr int64_t kSoundBark = 3;
 
 // Dropdown wants a plain label array.
-constexpr auto kBarkSoundLabels = [] {
-    std::array<const char*, std::size(kBarkSounds)> labels{};
+constexpr auto kChordSoundLabels = [] {
+    std::array<const char*, std::size(kChordSounds)> labels{};
     for (size_t i = 0; i < labels.size(); i++) {
-        labels[i] = kBarkSounds[i].label;
+        labels[i] = kChordSounds[i].label;
     }
     return labels;
 }();
 
-// A configurable chord. The input layer claims its button for the tick it's pressed and for as
-// long as it stays held, so the button's vanilla action never sees it.
-struct ChordAction {
+// A configurable chord and its sound. The input layer claims the chord's button for the tick it's
+// pressed and for as long as it stays held, so the button's vanilla action never sees it.
+struct ChordSlot {
     ConfigVarHandle modifier = 0;
     ConfigVarHandle button = 0;
+    ConfigVarHandle sound = 0;
     bool triggered = false;  // pressed and claimed this tick; cleared once acted on
     bool held = false;       // claimed and still physically held
 };
 
-ChordAction g_howl;
-ChordAction g_bark;
-ChordAction g_growl;
+struct ChordSlotConfig {
+    const char* title;
+    const char* modifierVar;
+    const char* buttonVar;
+    const char* soundVar;
+    int64_t defaultButton;
+    int64_t defaultSound;
+};
+
+// Earlier slots win when two share a button. All default to holding R.
+constexpr ChordSlotConfig kSlotConfigs[] = {
+    {"Chord 1", "chord1Hold", "chord1Press", "chord1Sound", kButtonB, kSoundBark},
+    {"Chord 2", "chord2Hold", "chord2Press", "chord2Sound", kButtonA, kSoundGrowl},
+    {"Chord 3", "chord3Hold", "chord3Press", "chord3Sound", kButtonDpadRight, kSoundHowl},
+    {"Chord 4", "chord4Hold", "chord4Press", "chord4Sound", kButtonDpadLeft, kSoundNone},
+};
+
+ChordSlot g_slots[std::size(kSlotConfigs)];
 
 ConfigVarHandle g_cvarStyle = 0;
 ConfigVarHandle g_cvarAllowCombatHowl = 0;
-ConfigVarHandle g_cvarBarkSound = 0;
 
 // Set while a howl this mod started is playing, so the sustain hook leaves cutscene howls alone.
 bool g_modHowl = false;
+// The slot whose chord started that howl; it holds the howl while held.
+const ChordSlot* g_howlSlot = nullptr;
+// Set while the mod plays a chord's voice, so the breath filter lets assigned breath voices through.
+bool g_playingChordVoice = false;
 // Standing howl hold state, sway tick counter, and the animation rate to resume with.
 enum class StandingHold { None, Sway, Release };
 StandingHold g_standingHold = StandingHold::None;
@@ -238,21 +270,39 @@ bool can_howl(daAlink_c* link) {
     return !targetingEnemy;
 }
 
-void update_chord(ChordAction& action, bool allowed, u32 hold, u32 trig, u32& claimed) {
-    const u32 modifier = get_table_option(action.modifier, kModifierMasks);
-    const u32 button = get_table_option(action.button, kButtonMasks);
+const ChordSound& slot_sound(const ChordSlot& slot) {
+    return get_table_option(slot.sound, kChordSounds);
+}
 
-    action.triggered = false;
-    if (action.held) {
-        action.held = (hold & button) != 0;
+bool growl_held() {
+    return std::any_of(std::begin(g_slots), std::end(g_slots), [](const ChordSlot& slot) {
+        return slot.held && slot_sound(slot).kind == SoundKind::Growl;
+    });
+}
+
+// Growl or any assigned voice: these need Link's voice channel to themselves.
+bool voice_chord_held() {
+    return std::any_of(std::begin(g_slots), std::end(g_slots), [](const ChordSlot& slot) {
+        const SoundKind kind = slot_sound(slot).kind;
+        return slot.held && (kind == SoundKind::Growl || kind == SoundKind::Voice);
+    });
+}
+
+void update_chord(ChordSlot& slot, bool allowed, u32 hold, u32 trig, u32& claimed) {
+    const u32 modifier = get_table_option(slot.modifier, kModifierMasks);
+    const u32 button = get_table_option(slot.button, kButtonMasks);
+
+    slot.triggered = false;
+    if (slot.held) {
+        slot.held = (hold & button) != 0;
     }
-    if (!action.held && allowed && !(claimed & button) && (hold & modifier) == modifier &&
+    if (!slot.held && allowed && !(claimed & button) && (hold & modifier) == modifier &&
         (trig & button))
     {
-        action.triggered = true;
-        action.held = true;
+        slot.triggered = true;
+        slot.held = true;
     }
-    if (action.held) {
+    if (slot.held) {
         claimed |= button;
     }
 }
@@ -267,11 +317,24 @@ HookAction on_game_execute_pre(ModContext*, void*, void*, void*) {
     daAlink_c* link = static_cast<daAlink_c*>(dComIfGp_getPlayer(0));
     const bool inFreeState = link != nullptr && in_free_wolf_state(link);
 
-    // Priority order: an earlier action keeps a shared button.
+    // Priority order: an earlier slot keeps a shared button. A slot set to None never claims, so
+    // its button keeps its vanilla action.
     u32 claimed = 0;
-    update_chord(g_howl, inFreeState && can_howl(link), hold, trig, claimed);
-    update_chord(g_bark, inFreeState, hold, trig, claimed);
-    update_chord(g_growl, inFreeState, hold, trig, claimed);
+    for (ChordSlot& slot : g_slots) {
+        bool allowed = false;
+        switch (slot_sound(slot).kind) {
+        case SoundKind::None:
+            break;
+        case SoundKind::Howl:
+            allowed = inFreeState && can_howl(link);
+            break;
+        case SoundKind::Growl:
+        case SoundKind::Voice:
+            allowed = inFreeState;
+            break;
+        }
+        update_chord(slot, allowed, hold, trig, claimed);
+    }
 
     pad.mPressedButtonFlags &= ~claimed;
     pad.mButtonFlags &= ~claimed;
@@ -279,35 +342,49 @@ HookAction on_game_execute_pre(ModContext*, void*, void*, void*) {
 }
 
 bool try_start_howl(daAlink_c* link) {
-    if (!g_howl.triggered || !can_howl(link)) {
+    ChordSlot* howlSlot = nullptr;
+    for (ChordSlot& slot : g_slots) {
+        if (slot.triggered && slot_sound(slot).kind == SoundKind::Howl) {
+            slot.triggered = false;
+            howlSlot = &slot;
+            break;
+        }
+    }
+    if (howlSlot == nullptr || !can_howl(link)) {
         return false;
     }
-    g_howl.triggered = false;
 
     const bool sitting = get_int_option(g_cvarStyle, kStyleSitting) == kStyleSitting;
     if (!link->procWolfHowlInit(sitting ? 1 : 0)) {
         return false;
     }
     g_modHowl = true;
+    g_howlSlot = howlSlot;
     g_standingHold = StandingHold::None;
     return true;
 }
 
-void update_bark(daAlink_c* link) {
-    if (!g_bark.held || !in_free_wolf_state(link)) {
-        return;
+// Plays the voices assigned to chords: once per press, or every tick while held for looping ones.
+void update_voices(daAlink_c* link) {
+    const bool inFreeState = in_free_wolf_state(link);
+    for (ChordSlot& slot : g_slots) {
+        const ChordSound& sound = slot_sound(slot);
+        if (sound.kind != SoundKind::Voice || !slot.held || !inFreeState) {
+            continue;
+        }
+        g_playingChordVoice = true;
+        if (sound.loop) {
+            link->voiceStartLevel(sound.voice);
+        } else if (slot.triggered) {
+            link->voiceStart(sound.voice);
+        }
+        g_playingChordVoice = false;
+        slot.triggered = false;
     }
-    const BarkSound& sound = get_table_option(g_cvarBarkSound, kBarkSounds);
-    if (sound.loop) {
-        link->voiceStartLevel(sound.id);
-    } else if (g_bark.triggered) {
-        link->voiceStart(sound.id);
-    }
-    g_bark.triggered = false;
 }
 
 bool growling(daAlink_c* link) {
-    return g_growl.held && in_free_wolf_state(link);
+    return growl_held() && in_free_wolf_state(link);
 }
 
 // The lock-on proc plays the growl voice itself (via checkWolfAtnWait); everywhere else the mod
@@ -323,10 +400,11 @@ HookAction on_next_action_from_button_pre(ModContext*, void* args, void* retval,
     daAlink_c* link = mods::arg<daAlink_c*>(args, 0);
     if (link->mProcID != daAlink_c::PROC_WOLF_HOWL) {
         g_modHowl = false;
+        g_howlSlot = nullptr;
         g_standingHold = StandingHold::None;
     }
 
-    update_bark(link);
+    update_voices(link);
     update_growl_voice(link);
 
     if (!try_start_howl(link)) {
@@ -341,7 +419,8 @@ HookAction on_next_action_from_button_pre(ModContext*, void* args, void* retval,
 // Holds the howl while the chord button (consumed from the pad by the input layer) stays held.
 HookAction on_wolf_howl_pre(ModContext*, void* args, void*, void*) {
     daAlink_c* link = mods::arg<daAlink_c*>(args, 0);
-    const bool holding = g_modHowl && g_howl.held && !link->checkEventRun();
+    const bool holding =
+        g_modHowl && g_howlSlot != nullptr && g_howlSlot->held && !link->checkEventRun();
 
     // Sitting: vanilla loops frames 38-56 while doButton() is held. mItemButton is rebuilt every
     // frame by setStickData, so this doesn't leak into other actions.
@@ -419,9 +498,9 @@ void on_wolf_atn_wait_post(ModContext*, void* args, void* retval, void*) {
 }
 
 // Link's voice object has a single sound handle, and while moving the breathing one-shots keep it
-// busy, so the growl (a level sound) never gets to play. Drop the breaths while growling.
+// busy, so a growl or held voice never gets to play. Drop the breaths while a voice chord is held.
 HookAction on_link_voice_pre(ModContext*, void* args, void* retval, void*) {
-    if (!g_growl.held) {
+    if (g_playingChordVoice || !voice_chord_held()) {
         return HOOK_CONTINUE;
     }
     switch (static_cast<u32>(mods::arg<JAISoundID>(args, 1))) {
@@ -445,7 +524,7 @@ HookAction on_link_voice_pre(ModContext*, void* args, void* retval, void*) {
 // volume unless an enemy is targeted. setAtnList recomputes the state every tick.
 HookAction on_link_voice_level_pre(ModContext*, void* args, void*, void*) {
     Z2CreatureLink* z2Link = mods::arg<Z2CreatureLink*>(args, 0);
-    if (g_growl.held && static_cast<u32>(mods::arg<JAISoundID>(args, 1)) == Z2SE_WL_V_ROAR &&
+    if (growl_held() && static_cast<u32>(mods::arg<JAISoundID>(args, 1)) == Z2SE_WL_V_ROAR &&
         (z2Link->mMarkState == 1 || z2Link->mMarkState == 2))
     {
         z2Link->setMarkState(0);
@@ -490,20 +569,32 @@ void add_dropdown(UiElementHandle pane, const char* label, ConfigVarHandle cvar,
     add_control(pane, control);
 }
 
-void add_chord_dropdowns(UiElementHandle pane, const ChordAction& action) {
-    add_dropdown(pane, "Hold", action.modifier, kModifierLabels, std::size(kModifierLabels));
-    add_dropdown(pane, "Then press", action.button, kButtonLabels, std::size(kButtonLabels));
-}
-
 constexpr const char* kCombatLimitation =
     "Only applies while L-targeting an enemy. Howling during a fight while not targeting is not "
     "preventable.";
 
 ModResult build_panel(ModContext*, UiElementHandle panel, void*, ModError*) {
+    for (size_t i = 0; i < std::size(g_slots); i++) {
+        const ChordSlot& slot = g_slots[i];
+        svc_ui->pane_add_section(mod_ctx, panel, kSlotConfigs[i].title);
+        add_dropdown(panel, "Hold", slot.modifier, kModifierLabels, std::size(kModifierLabels));
+        add_dropdown(panel, "Then press", slot.button, kButtonLabels, std::size(kButtonLabels));
+        add_dropdown(
+            panel, "Sound", slot.sound, kChordSoundLabels.data(), kChordSoundLabels.size());
+    }
+    svc_ui->pane_add_text(mod_ctx, panel,
+        "Howl and Growl are animated and last while held. Growl shows the crouched stance while "
+        "standing still or holding L; while moving without L it's the sound only. Every other "
+        "sound is voice only; \"(hold)\" sounds loop while held. A chord set to None leaves its "
+        "button alone. If two chords share a button, the earlier one wins.",
+        nullptr);
+    svc_ui->pane_add_text(mod_ctx, panel,
+        "Avoid R+X, R+Y, R+D-pad Up/Down: Dusklight uses them. R+A also triggers Dusklight's "
+        "Moon Jump if that's enabled.",
+        nullptr);
+
     svc_ui->pane_add_section(mod_ctx, panel, "Howl");
-    add_chord_dropdowns(panel, g_howl);
     add_dropdown(panel, "Howl style", g_cvarStyle, kStyleLabels, std::size(kStyleLabels));
-    svc_ui->pane_add_text(mod_ctx, panel, "Hold the button to keep howling.", nullptr);
 
     UiControlDesc control = UI_CONTROL_DESC_INIT;
     control.kind = UI_CONTROL_TOGGLE;
@@ -514,26 +605,6 @@ ModResult build_panel(ModContext*, UiElementHandle panel, void*, ModError*) {
     add_control(panel, control);
     // help_rml only renders in window tabs, so also show the limitation in the panel itself.
     svc_ui->pane_add_text(mod_ctx, panel, kCombatLimitation, nullptr);
-
-    svc_ui->pane_add_section(mod_ctx, panel, "Growl");
-    add_chord_dropdowns(panel, g_growl);
-    svc_ui->pane_add_text(mod_ctx, panel,
-        "Growls while held. The crouched growl stance shows while standing still or holding L; "
-        "while moving without L it's the sound only.",
-        nullptr);
-
-    svc_ui->pane_add_section(mod_ctx, panel, "Bark");
-    add_chord_dropdowns(panel, g_bark);
-    add_dropdown(panel, "Sound", g_cvarBarkSound, kBarkSoundLabels.data(), kBarkSoundLabels.size());
-    svc_ui->pane_add_text(mod_ctx, panel,
-        "Every wolf voice in the game is listed so you can try them. \"(hold)\" sounds loop while "
-        "the button is held.",
-        nullptr);
-
-    svc_ui->pane_add_text(mod_ctx, panel,
-        "Avoid R+X, R+Y, R+D-pad Up/Down: Dusklight uses them. R+A also triggers Dusklight's "
-        "Moon Jump if that's enabled.",
-        nullptr);
     return MOD_OK;
 }
 
@@ -562,25 +633,23 @@ ModResult register_bool_var(
 }
 
 ModResult register_options(ModError* error) {
-    const struct {
-        const char* name;
-        int64_t defaultValue;
-        ConfigVarHandle& handle;
-    } intVars[] = {
-        {"howlModifier", 0, g_howl.modifier},
-        {"howlButton", 0, g_howl.button},
-        {"howlStyle", kStyleSitting, g_cvarStyle},
-        {"barkModifier", 0, g_bark.modifier},
-        {"barkButton", kButtonDpadRight, g_bark.button},
-        {"barkSound", 0, g_cvarBarkSound},
-        {"growlModifier", 0, g_growl.modifier},
-        {"growlButton", kButtonA, g_growl.button},
-    };
-    for (const auto& var : intVars) {
-        const ModResult result = register_int_var(var.name, var.defaultValue, var.handle, error);
+    for (size_t i = 0; i < std::size(g_slots); i++) {
+        const ChordSlotConfig& config = kSlotConfigs[i];
+        ChordSlot& slot = g_slots[i];
+        ModResult result = register_int_var(config.modifierVar, 0, slot.modifier, error);
+        if (result == MOD_OK) {
+            result = register_int_var(config.buttonVar, config.defaultButton, slot.button, error);
+        }
+        if (result == MOD_OK) {
+            result = register_int_var(config.soundVar, config.defaultSound, slot.sound, error);
+        }
         if (result != MOD_OK) {
             return result;
         }
+    }
+    const ModResult result = register_int_var("howlStyle", kStyleSitting, g_cvarStyle, error);
+    if (result != MOD_OK) {
+        return result;
     }
     return register_bool_var("allowCombatHowl", false, g_cvarAllowCombatHowl, error);
 }
@@ -637,6 +706,7 @@ MOD_EXPORT ModResult mod_update(ModError*) {
 
 MOD_EXPORT ModResult mod_shutdown(ModError*) {
     g_modHowl = false;
+    g_howlSlot = nullptr;
     g_growlStance = false;
     return MOD_OK;
 }
